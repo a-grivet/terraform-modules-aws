@@ -77,7 +77,7 @@ module "asg" {
 | alb\_target\_tracking\_resource\_label | Resource label for ALB target tracking (format: app/load-balancer-name/id/targetgroup/target-group-name/id) | `string` | `""` | no |
 | alb\_target\_tracking\_target | Target number of requests per target for ALB-based scaling | `number` | `1000` | no |
 | ami\_id | AMI ID to use for instances (defaults to latest Amazon Linux 2023 if empty) | `string` | `""` | no |
-| ami\_kms\_key\_id | KMS key ID/ARN used to encrypt the AMI. Required for Auto Scaling to decrypt the AMI snapshot. Default is Organization Golden AMI shared key. | `string` | `"arn:aws:kms:eu-west-1:xxxxxxxxxxxx:key/mrk-b6b4ba5ee2214c14b12e9b4568b0d6c6"` | no |
+| ami\_kms\_key\_id | KMS key ID/ARN used to encrypt the AMI. Required for Auto Scaling to decrypt the AMI snapshot. Default is Organization Golden AMI shared key. | `string` | `"arn:aws:kms:eu-west-1:xxxxxxxxxxxx:key/mrk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"` | no |
 | cpu\_target\_tracking\_target | Target CPU utilization percentage for target tracking | `number` | `70` | no |
 | desired\_capacity | Desired number of instances in the ASG | `number` | `2` | no |
 | detailed\_monitoring | Enable detailed CloudWatch monitoring (additional cost) | `bool` | `false` | no |
@@ -132,6 +132,7 @@ module "asg" {
 | launch\_template\_id | ID of the Launch Template |
 | launch\_template\_latest\_version | Latest version of the Launch Template |
 | low\_cpu\_alarm\_arn | ARN of the low CPU CloudWatch alarm |
+<!-- END_TF_DOCS -->
 <!-- END_TF_DOCS -->
 <!-- END_TF_DOCS -->
 <!-- END_TF_DOCS -->
