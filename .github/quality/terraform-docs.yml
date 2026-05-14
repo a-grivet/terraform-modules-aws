@@ -1,0 +1,95 @@
+# ============================================================================
+# TERRAFORM-DOCS CONFIGURATION
+# ============================================================================
+# This file controls how terraform-docs generates Terraform reference content
+# inside each module README.md.
+#
+# It is consumed by ci-docs.yml, which passes it explicitly via --config-file
+# when running terraform-docs against the modules/ directory.
+# ============================================================================
+
+# Output format for generated documentation.
+# markdown table renders inputs and outputs as aligned tables, which is easier
+# to read on GitHub than plain markdown lists.
+formatter: markdown table
+
+# Pin a specific terraform-docs version to keep generation deterministic.
+# Leave empty to use whatever version is installed in CI.
+version: ""
+
+# Recursive mode is disabled because each module is processed individually
+# by the ci-docs.yml loop. Enabling it here would cause double-processing.
+recursive:
+  enabled: false
+
+# Sections to include in the generated output.
+# Only the Terraform-facing contract is rendered: providers, resources,
+# inputs, and outputs. Internal locals and data sources are intentionally
+# excluded to keep README files focused on module consumers.
+sections:
+  show:
+    - requirements
+    - providers
+    - resources
+    - inputs
+    - outputs
+
+# Template injected between the BEGIN_TF_DOCS and END_TF_DOCS markers in
+# each module README. terraform-docs replaces only this block, leaving all
+# hand-written content above and below the markers untouched.
+content: |-
+  <!-- BEGIN_TF_DOCS -->
+  {{ .Requirements }}
+
+  {{ .Providers }}
+
+  {{ .Resources }}
+
+  {{ .Inputs }}
+
+  {{ .Outputs }}
+  <!-- END_TF_DOCS -->
+
+# Write generated content back into README.md using inject mode.
+# inject replaces only the BEGIN_TF_DOCS / END_TF_DOCS block, so manual
+# sections of the README are never overwritten by the CI workflow.
+output:
+  file: README.md
+  mode: inject
+
+# Sort inputs by required first so mandatory variables appear at the top of
+# the generated table, making the module interface easier to scan.
+sort:
+  enabled: true
+  by: required
+
+settings:
+  # Disable HTML anchors — GitHub renders them inconsistently across themes.
+  anchor: false
+  # Disable color markup, which does not render in plain markdown contexts.
+  color: false
+  # Show default values for optional variables.
+  default: true
+  # Include variable description fields in the generated table.
+  description: true
+  # Escape special characters so markdown tables render correctly.
+  escape: true
+  # Show empty sections so the README structure stays consistent even when
+  # a module has no outputs or no providers yet.
+  hide-empty: false
+  # Allow HTML inside generated content for cases where markdown is not
+  # expressive enough (e.g. multi-line default values).
+  html: true
+  # Heading indent level used for generated section titles.
+  indent: 2
+  # Include the .terraform.lock.hcl provider versions in the requirements
+  # section so consumers can see the exact provider versions in use.
+  lockfile: true
+  # Extract descriptions from inline comments above variable and output blocks.
+  read-comments: true
+  # Mark variables as required or optional in the generated table.
+  required: true
+  # Flag sensitive variables so consumers know which inputs must be protected.
+  sensitive: true
+  # Show the Terraform type constraint for each variable.
+  type: true

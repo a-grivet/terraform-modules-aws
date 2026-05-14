@@ -1,0 +1,214 @@
+# ============================================================================
+# TERRAFORM INTEGRATION TEST WORKFLOW
+# ============================================================================
+# This workflow validates shared Terraform modules in a more realistic
+# execution context than ci-validate.yml.
+#
+# Its purpose is to run example root modules that consume the centralized
+# modules with real provider initialization and AWS authentication.
+#
+# WHAT THIS WORKFLOW CHECKS:
+# - OIDC-based AWS authentication for this repository
+# - Terraform init/validate/plan on example root modules
+# - Basic integration behavior of shared modules when wired together
+#
+# WHAT THIS WORKFLOW DOES NOT CHECK:
+# - Full end-to-end deployment lifecycle in blueprint repositories
+# - Manual approval flows from consumer repositories
+# - Consumer-specific remote state backends
+# - Production readiness of every possible module combination
+#
+# WHY THIS WORKFLOW MATTERS:
+# - It bridges the gap between static module validation and real AWS-backed use
+# - It helps catch provider aliasing or cross-module wiring issues early
+# - It provides confidence before blueprint repositories consume new releases
+# ============================================================================
+
+name: Terraform Integration Test
+
+# ============================================================================
+# WORKFLOW TRIGGERS
+# ============================================================================
+# The workflow runs when shared modules, example roots, or this integration
+# workflow itself changes. It can also be started manually to target a
+# specific environment from the GitHub Actions UI.
+# ============================================================================
+on:
+  push:
+    branches:
+      - dev
+      - main
+    paths:
+      - 'modules/**'
+      - 'examples/**'
+      - '.github/workflows/integration-test.yml'
+  pull_request:
+    branches:
+      - dev
+      - main
+    paths:
+      - 'modules/**'
+      - 'examples/**'
+      - '.github/workflows/integration-test.yml'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to test (dev or prod)'
+        required: true
+        type: choice
+        options:
+          - dev
+          - prod
+
+# OIDC is required for AWS authentication and pull-request write permission is
+# kept so future workflow enhancements can comment or summarize results.
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+# ============================================================================
+# JOBS
+# ============================================================================
+# The workflow is split into:
+# - one job that determines which AWS environment should be used
+# - one job that runs integration validation against example root modules
+# ============================================================================
+jobs:
+  determine-environment:
+    # This job resolves the execution environment from either:
+    # - manual workflow input
+    # - the branch name for automatic runs
+    #
+    # It also selects the correct AWS role to assume through OIDC.
+    name: Determine Environment
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.set-env.outputs.environment }}
+      aws_role: ${{ steps.set-env.outputs.aws_role }}
+
+    steps:
+      - name: Set Environment Based on Branch
+        id: set-env
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Manual runs can force the environment explicitly. Otherwise the
+          # environment is derived from the branch convention used in this
+          # repository.
+          if [ -n "${{ inputs.environment }}" ]; then
+            ENV="${{ inputs.environment }}"
+          elif [[ "${{ github.ref }}" == "refs/heads/dev" ]]; then
+            ENV="dev"
+          elif [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            ENV="prod"
+          else
+            echo "Unable to determine environment from ref ${GITHUB_REF}"
+            exit 1
+          fi
+
+          echo "environment=${ENV}" >> "${GITHUB_OUTPUT}"
+
+          # Publish the matching AWS role for the selected environment so the
+          # next job can authenticate through OIDC without duplicating logic.
+          if [ "${ENV}" = "dev" ]; then
+            echo "aws_role=${{ vars.DEV_DEPLOY_AWS_ROLE_TO_ASSUME }}" >> "${GITHUB_OUTPUT}"
+          else
+            echo "aws_role=${{ vars.PROD_DEPLOY_AWS_ROLE_TO_ASSUME }}" >> "${GITHUB_OUTPUT}"
+          fi
+
+  integration-test:
+    # This job runs the actual Terraform integration validation against the
+    # example root modules stored under examples/.
+    name: Test ${{ needs.determine-environment.outputs.environment }} Examples
+    runs-on: ubuntu-latest
+    needs: determine-environment
+    environment: ${{ needs.determine-environment.outputs.environment == 'prod' && 'production' || '' }}
+
+    env:
+      ENVIRONMENT: ${{ needs.determine-environment.outputs.environment }}
+      AWS_REGION: eu-west-1
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        # Kept because some actions used in the GitHub Enterprise environment
+        # still expect a Node runtime during execution.
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Setup Terraform
+        # Integration tests intentionally use a pinned Terraform version so the
+        # behavior stays reproducible across runner upgrades.
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.5
+
+      - name: Setup AWS CLI
+        # The AWS CLI is installed explicitly because the workflow verifies the
+        # caller identity and examples may rely on real provider interactions.
+        run: |
+          curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+          unzip -q awscliv2.zip
+          sudo ./aws/install
+          aws --version
+
+      - name: Configure AWS Credentials
+        # Authentication is done through GitHub OIDC. No long-lived AWS keys
+        # should be stored in the repository.
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ needs.determine-environment.outputs.aws_role }}
+          role-session-name: github-modules-test-${{ env.ENVIRONMENT }}-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-duration-seconds: 3600
+
+      - name: Verify AWS Account
+        # Printing the caller identity is useful for troubleshooting and gives
+        # maintainers confidence that the right account and role are in use.
+        run: |
+          CURRENT_ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+          CURRENT_ARN=$(aws sts get-caller-identity --query Arn --output text)
+
+          echo "=========================================="
+          echo "AWS Account Verification"
+          echo "=========================================="
+          echo "Authenticated to AWS Account: ${CURRENT_ACCOUNT}"
+          echo "Session ARN: ${CURRENT_ARN}"
+          echo "Environment: ${ENVIRONMENT}"
+          echo "Region: ${AWS_REGION}"
+          echo "=========================================="
+
+      - name: Integration Validation
+        # Each example is treated as a minimal root module that exercises one
+        # or more centralized modules with real providers and AWS access.
+        #
+        # We stop at terraform plan on purpose:
+        # - enough to validate provider wiring and configuration
+        # - avoids creating or mutating live infrastructure in this workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # If no example roots exist yet, exit cleanly instead of failing the
+          # repository while the integration layer is still being bootstrapped.
+          if [ ! -d examples ] || [ -z "$(find examples -mindepth 2 -maxdepth 2 -name '*.tf' 2>/dev/null)" ]; then
+            echo "No Terraform examples found yet. Nothing to integration-test."
+            exit 0
+          fi
+
+          # Run init/validate/plan for each first-level example directory so
+          # failures stay attributable to a concrete integration scenario.
+          while IFS= read -r example_dir; do
+            echo "=========================================="
+            echo "Integration testing example: ${example_dir}"
+            echo "=========================================="
+
+            terraform -chdir="${example_dir}" init -input=false
+            terraform -chdir="${example_dir}" validate
+            terraform -chdir="${example_dir}" plan -input=false -lock=false -out=tfplan
+          done < <(find examples -mindepth 1 -maxdepth 1 -type d | sort)
